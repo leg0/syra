@@ -1,10 +1,12 @@
-use std::path::{Path, PathBuf};
+use std::{
+    ffi::OsString,
+    path::{Path, PathBuf},
+};
 
 use crate::error::Error;
 
 pub struct Base<'a>(pub &'a Path);
 pub struct Target<'a>(pub &'a Path);
-
 
 /// Returns the path to `target` relative to `base`.
 ///
@@ -44,6 +46,47 @@ pub fn relative_path(target: Target, base: Base) -> Result<PathBuf, Error> {
     Ok(result)
 }
 
+pub struct Package {
+    pub path: PathBuf,
+}
+
+impl Package {
+    pub fn new(package_dir: &Path, name: &str) -> Result<Self, Error> {
+        if !package_dir.is_absolute() {
+            return Err(Error::PathNotAbsolute);
+        }
+
+        let package_path = package_dir.join(name);
+        if !package_path.exists() {
+            return Err(Error::Io(std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                format!(
+                    "Package '{}' not found in '{}'",
+                    name,
+                    package_dir.display()
+                ),
+            )));
+        }
+
+        Ok(Package { path: package_path })
+    }
+
+    pub fn get_package_contents(&self) -> Result<Vec<OsString>, Error> {
+        let package_dir = &self.path;
+        if !package_dir.is_absolute() {
+            return Err(Error::PathNotAbsolute);
+        }
+
+        let mut contents = Vec::new();
+        let mut iter = package_dir.read_dir()?;
+        while let Some(entry) = iter.next() {
+            contents.push(entry?.file_name());
+        }
+
+        Ok(contents)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -73,14 +116,20 @@ mod tests {
     fn test_identical_paths() {
         let target = Path::new("/same/path");
         let base = Path::new("/same/path");
-        assert_eq!(relative_path(Target(&target), Base(&base)).unwrap(), PathBuf::from(""));
+        assert_eq!(
+            relative_path(Target(&target), Base(&base)).unwrap(),
+            PathBuf::from("")
+        );
     }
 
     #[test]
     fn test_target_inside_base() {
         let target = Path::new("/a/b/c/d");
         let base = Path::new("/a/b");
-        assert_eq!(relative_path(Target(&target), Base(&base)).unwrap(), PathBuf::from("c/d"));
+        assert_eq!(
+            relative_path(Target(&target), Base(&base)).unwrap(),
+            PathBuf::from("c/d")
+        );
     }
 
     #[test]

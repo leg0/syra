@@ -6,7 +6,7 @@ mod commands;
 use cli::{Cli, Commands};
 use clap::Parser;
 
-use commands::stow;
+use commands::{stow, unstow};
 
 fn main() {
     let cli = Cli::parse();
@@ -21,5 +21,12 @@ fn main() {
                 Err(e) => eprintln!("Error during stow operation: {:?}", e),
             }
         },
+        Commands::Unstow(args) => {
+            println!("unstow::run");
+            match unstow::run(args) {
+                Ok(_) => println!("Unstow operation completed successfully."),
+                Err(e) => eprintln!("Error during unstow operation: {:?}", e),
+            }
+        }
     }
 }

@@ -19,12 +19,17 @@ pub struct StowArgs {
         help("Directory whose contents are linked to target")
     )]
     pub package_dir: Option<PathBuf>,
+
     #[arg(
         short = 't',
         long = "target",
         help("Directory to create the links into")
     )]
     pub target_dir: Option<PathBuf>,
+    
+    #[arg(help("Packages to stow"), required = true, num_args = 1..)]
+    pub packages: Vec<String>,
+
     #[arg(
         short = 'v',
         long = "verbose",
@@ -32,6 +37,7 @@ pub struct StowArgs {
         default_value_t = false
     )]
     pub verbose: bool,
+
     #[arg(
         short = 'n',
         long = "no",
@@ -41,12 +47,14 @@ pub struct StowArgs {
         default_value_t = true
     )]
     pub simulate: bool,
-    #[arg(help("Packages to stow"), required = true, num_args = 1..)]
-    pub packages: Vec<String>,
 }
+
+pub type UnstowArgs = StowArgs;
 
 #[derive(Subcommand, Debug)]
 pub enum Commands {
     #[command(about = "Stow packages into a target directory")]
     Stow(StowArgs),
+    #[command(about = "Unstow packages from a target directory")]
+    Unstow(UnstowArgs),
 }
