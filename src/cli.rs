@@ -26,7 +26,7 @@ pub struct StowArgs {
         help("Directory to create the links into")
     )]
     pub target_dir: Option<PathBuf>,
-    
+
     #[arg(help("Packages to stow"), required = true, num_args = 1..)]
     pub packages: Vec<String>,
 
@@ -55,6 +55,10 @@ pub type UnstowArgs = StowArgs;
 pub enum Commands {
     #[command(about = "Stow packages into a target directory")]
     Stow(StowArgs),
+
     #[command(about = "Unstow packages from a target directory")]
     Unstow(UnstowArgs),
+
+    #[command(about = "Unstow and restow packages")]
+    Restow(StowArgs),
 }

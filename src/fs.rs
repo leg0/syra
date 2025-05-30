@@ -1,9 +1,13 @@
-use std::{
-    ffi::OsString,
-    path::{Path, PathBuf},
-};
+use std::path::{Path, PathBuf};
+use std::io;
+use std::ffi::OsString;
 
 use crate::error::Error;
+
+pub struct Symlink {
+    pub path: PathBuf,
+    pub target: PathBuf,
+}
 
 pub struct Base<'a>(pub &'a Path);
 pub struct Target<'a>(pub &'a Path);
@@ -44,6 +48,29 @@ pub fn relative_path(target: Target, base: Base) -> Result<PathBuf, Error> {
     }
 
     Ok(result)
+}
+
+/// Creates a symbolic link from `src` to `dst`.
+/// Automatically detects whether the source is a file or directory on Windows.
+pub fn symlink<P: AsRef<Path>, Q: AsRef<Path>>(src: P, dst: Q) -> Result<(), io::Error> {
+    let src = src.as_ref();
+    let dst = dst.as_ref();
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::symlink;
+        symlink(src, dst)
+    }
+
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::{symlink_file, symlink_dir};
+        if src.is_dir() {
+            symlink_dir(src, dst)
+        } else {
+            symlink_file(src, dst)
+        }
+    }
 }
 
 pub struct Package {

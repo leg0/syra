@@ -28,5 +28,8 @@ fn main() {
                 Err(e) => eprintln!("Error during unstow operation: {:?}", e),
             }
         }
+        Commands::Restow(_) => {
+            todo!("Restow operation not implemented yet");
+        }
     }
 }

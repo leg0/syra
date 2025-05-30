@@ -1,11 +1,10 @@
 use std::env::current_dir;
 use std::fs::read_link;
-use std::os::unix::fs::symlink;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use crate::cli;
 use crate::error::Error;
-use crate::fs::{Base, Package, Target, relative_path};
+use crate::fs::{Base, Package, Symlink, Target, relative_path, symlink};
 
 pub fn run(args: cli::StowArgs) -> Result<(), Error> {
     if args.packages.is_empty() {
@@ -36,7 +35,19 @@ pub fn run(args: cli::StowArgs) -> Result<(), Error> {
         if args.verbose {
             println!("Stowing package: {}", pkg);
         }
-        do_stow(&package_dir, &target_dir, &pkg, args.verbose, args.simulate)?;
+
+        let actions = do_stow(&package_dir, &target_dir, &pkg, args.verbose)?;
+
+        for Symlink { path, target } in &actions {
+            if args.verbose {
+                println!("Creating symlink: {:?} -> {:?}", path, target);
+            }
+            if args.simulate {
+                println!("symlink({:?}, {:?})", path, target);
+            } else {
+                symlink(&target, &path)?;
+            }
+        }
 
         if args.verbose {
             println!("Stowed package: {}", pkg);
@@ -46,30 +57,19 @@ pub fn run(args: cli::StowArgs) -> Result<(), Error> {
     Ok(())
 }
 
-struct Symlink {
-    path: PathBuf,
-    target: PathBuf,
-}
-
-enum StowAction {
-    Create(Symlink),
-    Remove(Symlink),
-    Failure(Error),
-}
-
-// TODO: instead of actually creating symlinks, return a list of symlinks that should be created
 fn do_stow(
     package_dir: &Path,
     target_dir: &Path,
     pkg: &str,
     verbose: bool,
-    simulate: bool,
-) -> Result<(), Error> {
+) -> Result<Vec<Symlink>, Error> {
     let package_path = package_dir.join(pkg);
     let link_target_base = relative_path(Target(&package_path), Base(&target_dir))?;
     if verbose {
         println!("target base: {:?}", link_target_base);
     }
+
+    let mut actions = Vec::new();
 
     let package = Package::new(package_dir, pkg)?;
     for item in package.get_package_contents()? {
@@ -101,7 +101,6 @@ fn do_stow(
                     );
                 }
             } else {
-                eprintln!("error: existing target {:?} not owned.", link_path);
                 return Err(Error::LinkNotOwnedByPackage(link_path, pkg.to_string()));
             }
         } else if link_path.is_file() {
@@ -110,18 +109,15 @@ fn do_stow(
                 link_path
             );
             return Err(Error::LinkPathExists(link_path));
-        } else {
-            println!("no");
         }
 
-        if simulate {
-            println!("symlink({:?}, {:?})", link_path, link_target);
-        } else {
-            symlink(&link_path, &link_target)?;
-        }
+        actions.push(Symlink {
+            path: link_path,
+            target: link_target,
+        });
     }
 
-    Ok(())
+    Ok(actions)
 }
 
 #[cfg(test)]
