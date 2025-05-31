@@ -74,7 +74,7 @@ fn do_stow(
     let package = Package::new(package_dir, pkg)?;
     for item in package.get_package_contents()? {
         if verbose {
-            println!("stow::run: Stowing item: {}", item.to_string_lossy());
+            println!("stow::run: Stowing item: {}", item.display());
         }
 
         let link_path = target_dir.join(&item);

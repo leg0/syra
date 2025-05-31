@@ -1,6 +1,5 @@
 use std::path::{Path, PathBuf};
 use std::io;
-use std::ffi::OsString;
 
 use crate::error::Error;
 
@@ -74,7 +73,7 @@ pub fn symlink<P: AsRef<Path>, Q: AsRef<Path>>(src: P, dst: Q) -> Result<(), io:
 }
 
 pub struct Package {
-    pub path: PathBuf,
+    path: PathBuf,
 }
 
 impl Package {
@@ -98,7 +97,7 @@ impl Package {
         Ok(Package { path: package_path })
     }
 
-    pub fn get_package_contents(&self) -> Result<Vec<OsString>, Error> {
+    pub fn get_package_contents(&self) -> Result<Vec<PathBuf>, Error> {
         let package_dir = &self.path;
         if !package_dir.is_absolute() {
             return Err(Error::PathNotAbsolute);
@@ -107,11 +106,16 @@ impl Package {
         let mut contents = Vec::new();
         let mut iter = package_dir.read_dir()?;
         while let Some(entry) = iter.next() {
-            contents.push(entry?.file_name());
+            contents.push(entry?.path());
         }
 
         Ok(contents)
     }
+
+    // pub fn path(&self) -> &Path {
+    //     &self.path
+    // }
+
 }
 
 #[cfg(test)]
