@@ -4,7 +4,7 @@ use std::path::Path;
 
 use crate::cli;
 use crate::error::Error;
-use crate::fs::{Base, Package, Symlink, Target, relative_path, symlink};
+use crate::fs::{relative_path, symlink, Base, Package, PackageImpl, Symlink, TargetPath};
 
 pub fn run(args: cli::StowArgs) -> Result<(), Error> {
     if args.packages.is_empty() {
@@ -36,7 +36,11 @@ pub fn run(args: cli::StowArgs) -> Result<(), Error> {
             println!("Stowing package: {}", pkg);
         }
 
-        let actions = do_stow(&package_dir, &target_dir, &pkg, args.verbose)?;
+        let package = PackageImpl::new(&package_dir, pkg)?;
+        if args.verbose {
+            println!("Package path: {:?}", package.path());
+        }
+        let actions = do_stow(&package, &target_dir, &pkg, args.verbose)?;
 
         for Symlink { path, target } in &actions {
             if args.verbose {
@@ -57,27 +61,30 @@ pub fn run(args: cli::StowArgs) -> Result<(), Error> {
     Ok(())
 }
 
-fn do_stow(
-    package_dir: &Path,
+fn do_stow<P: Package>(
+    package: &P,
     target_dir: &Path,
     pkg: &str,
     verbose: bool,
 ) -> Result<Vec<Symlink>, Error> {
-    let package_path = package_dir.join(pkg);
-    let link_target_base = relative_path(Target(&package_path), Base(&target_dir))?;
+    let package_path = package.path();
+    let link_target_base = relative_path(TargetPath(&package_path), Base(&target_dir))?;
     if verbose {
         println!("target base: {:?}", link_target_base);
+        println!("target dir: {:?}", target_dir);
     }
 
     let mut actions = Vec::new();
 
-    let package = Package::new(package_dir, pkg)?;
     for item in package.get_package_contents()? {
         if verbose {
-            println!("stow::run: Stowing item: {}", item.display());
+            println!("stow::run: Stowing item: {}, target_dir={}", item.display(), target_dir.display());
         }
 
         let link_path = target_dir.join(&item);
+        if verbose {
+            println!("stow::run: link_path: {:?}, item: {:?}", link_path, item);
+        }
         // this is the base directory of the link targets
         let link_target = link_target_base.join(&item);
 
@@ -111,6 +118,12 @@ fn do_stow(
             return Err(Error::LinkPathExists(link_path));
         }
 
+        if verbose {
+            println!(
+                "stow::run: Scheduling symlink creation: {:?} -> {:?}",
+                link_path, link_target
+            );
+        }
         actions.push(Symlink {
             path: link_path,
             target: link_target,

@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 
 use crate::cli::UnstowArgs;
 use crate::error::Error;
-use crate::fs::{Base, Package, Symlink, Target, relative_path};
+use crate::fs::{relative_path, Base, Package, PackageImpl, TargetPath};
 
 pub fn run(args: UnstowArgs) -> Result<(), Error> {
     if args.packages.is_empty() {
@@ -30,7 +30,8 @@ pub fn run(args: UnstowArgs) -> Result<(), Error> {
             println!("Unstowing package: {}", pkg);
         }
 
-        let actions = do_unstow(&package_dir, &target_dir, &pkg, args.verbose)?;
+        let package = PackageImpl::new(&package_dir, &pkg)?;
+        let actions = do_unstow(&package, &target_dir, &pkg, args.verbose)?;
 
         if args.simulate {
             for path in &actions {
@@ -53,21 +54,19 @@ pub fn run(args: UnstowArgs) -> Result<(), Error> {
     Ok(())
 }
 
-fn do_unstow(
-    package_dir: &Path,
+fn do_unstow<P: Package>(
+    package: &P,
     target_dir: &Path,
     pkg: &str,
     verbose: bool,
 ) -> Result<Vec<PathBuf>, Error> {
-    let package_path = package_dir.join(pkg);
-    let link_target_base = relative_path(Target(&package_path), Base(&target_dir))?;
+    let link_target_base = relative_path(TargetPath(package.path()), Base(&target_dir))?;
     if verbose {
         println!("target base: {:?}", link_target_base);
     }
 
     let mut actions = Vec::new();
 
-    let package = Package::new(package_dir, pkg)?;
     for item in package.get_package_contents()? {
         if verbose {
             println!("stow::run: Stowing item: {}", item.display());
@@ -119,10 +118,44 @@ fn do_unstow(
 
 fn is_owned_by_package(package_dir: &Path, target_dir: &Path, pkg: &str) -> Result<bool, Error> {
     let package_path = package_dir.join(pkg);
-    let link_target_base = relative_path(Target(&package_path), Base(&target_dir))?;
+    let link_target_base = relative_path(TargetPath(&package_path), Base(&target_dir))?;
     let _ = link_target_base;
 
     // Check if the symlink points to the package directory
     // This is a placeholder for the actual implementation
     Ok(true)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    struct TestPackage {
+        path: PathBuf,
+    }
+
+    impl Package for TestPackage {
+        fn get_package_contents(&self) -> Result<Vec<PathBuf>, Error> {
+            Ok(vec![PathBuf::from("test_item")])
+        }
+
+        fn path(&self) -> &Path {
+            &self.path
+        }
+    }
+
+    #[test]
+    fn test_do_unstow() {
+        let package = TestPackage{path: PathBuf::from("/path/to/package")};
+
+        let target_dir = PathBuf::from("/path/to/target");
+        do_unstow(
+            &package,
+            &target_dir,
+            "test_package",
+            true,
+        ).expect("Unstow should succeed");
+
+
+    }
 }

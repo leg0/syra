@@ -1,5 +1,5 @@
-use std::path::{Path, PathBuf};
 use std::io;
+use std::path::{Path, PathBuf};
 
 use crate::error::Error;
 
@@ -9,7 +9,7 @@ pub struct Symlink {
 }
 
 pub struct Base<'a>(pub &'a Path);
-pub struct Target<'a>(pub &'a Path);
+pub struct TargetPath<'a>(pub &'a Path);
 
 /// Returns the path to `target` relative to `base`.
 ///
@@ -17,9 +17,9 @@ pub struct Target<'a>(pub &'a Path);
 /// target: /home/user/project/src
 /// base:   /home/user/docs
 /// result: ../project/src
-pub fn relative_path(target: Target, base: Base) -> Result<PathBuf, Error> {
+pub fn relative_path(target: TargetPath, base: Base) -> Result<PathBuf, Error> {
     let Base(base) = base;
-    let Target(target) = target;
+    let TargetPath(target) = target;
 
     if !target.is_absolute() || !base.is_absolute() {
         return Err(Error::PathNotAbsolute);
@@ -63,7 +63,7 @@ pub fn symlink<P: AsRef<Path>, Q: AsRef<Path>>(src: P, dst: Q) -> Result<(), io:
 
     #[cfg(windows)]
     {
-        use std::os::windows::fs::{symlink_file, symlink_dir};
+        use std::os::windows::fs::{symlink_dir, symlink_file};
         if src.is_dir() {
             symlink_dir(src, dst)
         } else {
@@ -72,11 +72,37 @@ pub fn symlink<P: AsRef<Path>, Q: AsRef<Path>>(src: P, dst: Q) -> Result<(), io:
     }
 }
 
-pub struct Package {
+pub trait Package {
+    fn get_package_contents(&self) -> Result<Vec<PathBuf>, Error>;
+    fn path(&self) -> &Path;
+}
+
+pub struct PackageImpl {
     path: PathBuf,
 }
 
-impl Package {
+impl Package for PackageImpl {
+    fn get_package_contents(&self) -> Result<Vec<PathBuf>, Error> {
+        let package_dir = &self.path;
+        if !package_dir.is_absolute() {
+            return Err(Error::PathNotAbsolute);
+        }
+
+        let mut contents = Vec::new();
+        let mut iter = package_dir.read_dir()?;
+        while let Some(entry) = iter.next() {
+            contents.push(PathBuf::from(entry?.file_name()));
+        }
+
+        Ok(contents)
+    }
+
+    fn path(&self) -> &Path {
+        &self.path
+    }
+}
+
+impl PackageImpl {
     pub fn new(package_dir: &Path, name: &str) -> Result<Self, Error> {
         if !package_dir.is_absolute() {
             return Err(Error::PathNotAbsolute);
@@ -94,28 +120,32 @@ impl Package {
             )));
         }
 
-        Ok(Package { path: package_path })
+        Ok(Self { path: package_path.canonicalize()? })
     }
+}
 
-    pub fn get_package_contents(&self) -> Result<Vec<PathBuf>, Error> {
-        let package_dir = &self.path;
-        if !package_dir.is_absolute() {
-            return Err(Error::PathNotAbsolute);
-        }
+pub struct Target {
+    path: PathBuf,
+}
 
-        let mut contents = Vec::new();
-        let mut iter = package_dir.read_dir()?;
-        while let Some(entry) = iter.next() {
-            contents.push(entry?.path());
-        }
+impl Target {
+    // pub fn new(path: &Path) -> Result<Self, Error> {
+    //     if !path.is_absolute() {
+    //         return Err(Error::PathNotAbsolute);
+    //     }
+    //     Ok(Self {
+    //         path: path.into(),
+    //     })
+    // }
 
-        Ok(contents)
-    }
+    // pub fn get_installed_package_contents<P: Package>(&self, package: &P) -> Result<Vec<PathBuf>, Error> {
+    //     // return paths to items that are installed in the target directory.
+    //     todo!("Implement logic to get installed package contents");
+    // }
 
     // pub fn path(&self) -> &Path {
     //     &self.path
     // }
-
 }
 
 #[cfg(test)]
@@ -128,7 +158,7 @@ mod tests {
         let target = Path::new("/home/user/project/src");
         let base = Path::new("/home/user/docs");
         assert_eq!(
-            relative_path(Target(&target), Base(&base)).unwrap(),
+            relative_path(TargetPath(&target), Base(&base)).unwrap(),
             PathBuf::from("../project/src")
         );
     }
@@ -138,7 +168,7 @@ mod tests {
         let target = Path::new("/a/b/c");
         let base = Path::new("/x/y/z");
         assert_eq!(
-            relative_path(Target(&target), Base(&base)).unwrap(),
+            relative_path(TargetPath(&target), Base(&base)).unwrap(),
             PathBuf::from("../../../a/b/c")
         );
     }
@@ -148,7 +178,7 @@ mod tests {
         let target = Path::new("/same/path");
         let base = Path::new("/same/path");
         assert_eq!(
-            relative_path(Target(&target), Base(&base)).unwrap(),
+            relative_path(TargetPath(&target), Base(&base)).unwrap(),
             PathBuf::from("")
         );
     }
@@ -158,7 +188,7 @@ mod tests {
         let target = Path::new("/a/b/c/d");
         let base = Path::new("/a/b");
         assert_eq!(
-            relative_path(Target(&target), Base(&base)).unwrap(),
+            relative_path(TargetPath(&target), Base(&base)).unwrap(),
             PathBuf::from("c/d")
         );
     }
@@ -168,7 +198,7 @@ mod tests {
         let target = Path::new("/a/b");
         let base = Path::new("/a/b/c/d");
         assert_eq!(
-            relative_path(Target(&target), Base(&base)).unwrap(),
+            relative_path(TargetPath(&target), Base(&base)).unwrap(),
             PathBuf::from("../../")
         );
     }
@@ -177,7 +207,7 @@ mod tests {
     fn test_error_on_relative_target() {
         let target = Path::new("a/b/c");
         let base = Path::new("/a/b");
-        match relative_path(Target(&target), Base(&base)) {
+        match relative_path(TargetPath(&target), Base(&base)) {
             Err(Error::PathNotAbsolute) => (),
             _ => assert!(false, "Expected PathNotAbsolute error"),
         }
@@ -187,7 +217,7 @@ mod tests {
     fn test_error_on_relative_base() {
         let target = Path::new("/a/b/c");
         let base = Path::new("a/b");
-        match relative_path(Target(&target), Base(&base)) {
+        match relative_path(TargetPath(&target), Base(&base)) {
             Err(Error::PathNotAbsolute) => (),
             _ => assert!(false, "Expected PathNotAbsolute error"),
         }
