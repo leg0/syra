@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 
 use crate::cli::UnstowArgs;
 use crate::error::Error;
-use crate::fs::{relative_path, Base, Package, PackageImpl, TargetPath};
+use crate::fs::{relative_path, BasePath, Package, PackageImpl, TargetPath};
 
 pub fn run(args: UnstowArgs) -> Result<(), Error> {
     if args.packages.is_empty() {
@@ -60,7 +60,7 @@ fn do_unstow<P: Package>(
     pkg: &str,
     verbose: bool,
 ) -> Result<Vec<PathBuf>, Error> {
-    let link_target_base = relative_path(TargetPath(package.path()), Base(&target_dir))?;
+    let link_target_base = relative_path(TargetPath(package.path()), BasePath(&target_dir))?;
     if verbose {
         println!("target base: {:?}", link_target_base);
     }
@@ -118,7 +118,7 @@ fn do_unstow<P: Package>(
 
 fn is_owned_by_package(package_dir: &Path, target_dir: &Path, pkg: &str) -> Result<bool, Error> {
     let package_path = package_dir.join(pkg);
-    let link_target_base = relative_path(TargetPath(&package_path), Base(&target_dir))?;
+    let link_target_base = relative_path(TargetPath(&package_path), BasePath(&target_dir))?;
     let _ = link_target_base;
 
     // Check if the symlink points to the package directory

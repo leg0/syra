@@ -8,7 +8,7 @@ pub struct Symlink {
     pub target: PathBuf,
 }
 
-pub struct Base<'a>(pub &'a Path);
+pub struct BasePath<'a>(pub &'a Path);
 pub struct TargetPath<'a>(pub &'a Path);
 
 /// Returns the path to `target` relative to `base`.
@@ -17,8 +17,8 @@ pub struct TargetPath<'a>(pub &'a Path);
 /// target: /home/user/project/src
 /// base:   /home/user/docs
 /// result: ../project/src
-pub fn relative_path(target: TargetPath, base: Base) -> Result<PathBuf, Error> {
-    let Base(base) = base;
+pub fn relative_path(target: TargetPath, base: BasePath) -> Result<PathBuf, Error> {
+    let BasePath(base) = base;
     let TargetPath(target) = target;
 
     if !target.is_absolute() || !base.is_absolute() {
@@ -158,7 +158,7 @@ mod tests {
         let target = Path::new("/home/user/project/src");
         let base = Path::new("/home/user/docs");
         assert_eq!(
-            relative_path(TargetPath(&target), Base(&base)).unwrap(),
+            relative_path(TargetPath(&target), BasePath(&base)).unwrap(),
             PathBuf::from("../project/src")
         );
     }
@@ -168,7 +168,7 @@ mod tests {
         let target = Path::new("/a/b/c");
         let base = Path::new("/x/y/z");
         assert_eq!(
-            relative_path(TargetPath(&target), Base(&base)).unwrap(),
+            relative_path(TargetPath(&target), BasePath(&base)).unwrap(),
             PathBuf::from("../../../a/b/c")
         );
     }
@@ -178,7 +178,7 @@ mod tests {
         let target = Path::new("/same/path");
         let base = Path::new("/same/path");
         assert_eq!(
-            relative_path(TargetPath(&target), Base(&base)).unwrap(),
+            relative_path(TargetPath(&target), BasePath(&base)).unwrap(),
             PathBuf::from("")
         );
     }
@@ -188,7 +188,7 @@ mod tests {
         let target = Path::new("/a/b/c/d");
         let base = Path::new("/a/b");
         assert_eq!(
-            relative_path(TargetPath(&target), Base(&base)).unwrap(),
+            relative_path(TargetPath(&target), BasePath(&base)).unwrap(),
             PathBuf::from("c/d")
         );
     }
@@ -198,7 +198,7 @@ mod tests {
         let target = Path::new("/a/b");
         let base = Path::new("/a/b/c/d");
         assert_eq!(
-            relative_path(TargetPath(&target), Base(&base)).unwrap(),
+            relative_path(TargetPath(&target), BasePath(&base)).unwrap(),
             PathBuf::from("../../")
         );
     }
@@ -207,7 +207,7 @@ mod tests {
     fn test_error_on_relative_target() {
         let target = Path::new("a/b/c");
         let base = Path::new("/a/b");
-        match relative_path(TargetPath(&target), Base(&base)) {
+        match relative_path(TargetPath(&target), BasePath(&base)) {
             Err(Error::PathNotAbsolute) => (),
             _ => assert!(false, "Expected PathNotAbsolute error"),
         }
@@ -217,7 +217,7 @@ mod tests {
     fn test_error_on_relative_base() {
         let target = Path::new("/a/b/c");
         let base = Path::new("a/b");
-        match relative_path(TargetPath(&target), Base(&base)) {
+        match relative_path(TargetPath(&target), BasePath(&base)) {
             Err(Error::PathNotAbsolute) => (),
             _ => assert!(false, "Expected PathNotAbsolute error"),
         }

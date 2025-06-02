@@ -4,7 +4,7 @@ use std::path::Path;
 
 use crate::cli;
 use crate::error::Error;
-use crate::fs::{relative_path, symlink, Base, Package, PackageImpl, Symlink, TargetPath};
+use crate::fs::{relative_path, symlink, BasePath, Package, PackageImpl, Symlink, TargetPath};
 
 pub fn run(args: cli::StowArgs) -> Result<(), Error> {
     if args.packages.is_empty() {
@@ -68,7 +68,7 @@ fn do_stow<P: Package>(
     verbose: bool,
 ) -> Result<Vec<Symlink>, Error> {
     let package_path = package.path();
-    let link_target_base = relative_path(TargetPath(&package_path), Base(&target_dir))?;
+    let link_target_base = relative_path(TargetPath(&package_path), BasePath(&target_dir))?;
     if verbose {
         println!("target base: {:?}", link_target_base);
         println!("target dir: {:?}", target_dir);
