@@ -1,10 +1,9 @@
 use std::env::current_dir;
 use std::fs::read_link;
-use std::path::Path;
 
 use crate::cli;
 use crate::error::Error;
-use crate::fs::{relative_path, symlink, BasePath, Package, PackageImpl, Symlink, TargetPath};
+use crate::fs::{relative_path, symlink, BasePath, Package, PackageImpl, Symlink, Target, TargetImpl, TargetPath};
 
 pub fn run(args: cli::StowArgs) -> Result<(), Error> {
     if args.packages.is_empty() {
@@ -31,6 +30,7 @@ pub fn run(args: cli::StowArgs) -> Result<(), Error> {
         .map_or_else(|| Err(Error::DefaultTargetNotAvailable), Ok)?
         .canonicalize()?;
 
+    let target = TargetImpl::new(&target_dir)?;
     for pkg in args.packages.iter() {
         if args.verbose {
             println!("Stowing package: {}", pkg);
@@ -40,7 +40,7 @@ pub fn run(args: cli::StowArgs) -> Result<(), Error> {
         if args.verbose {
             println!("Package path: {:?}", package.path());
         }
-        let actions = do_stow(&package, &target_dir, &pkg, args.verbose)?;
+        let actions = do_stow(&package, &target, &pkg, args.verbose)?;
 
         for Symlink { path, target } in &actions {
             if args.verbose {
@@ -61,13 +61,14 @@ pub fn run(args: cli::StowArgs) -> Result<(), Error> {
     Ok(())
 }
 
-fn do_stow<P: Package>(
+fn do_stow<P: Package, T: Target>(
     package: &P,
-    target_dir: &Path,
+    target: &T,
     pkg: &str,
     verbose: bool,
 ) -> Result<Vec<Symlink>, Error> {
     let package_path = package.path();
+    let target_dir = target.path();
     let link_target_base = relative_path(TargetPath(&package_path), BasePath(&target_dir))?;
     if verbose {
         println!("target base: {:?}", link_target_base);

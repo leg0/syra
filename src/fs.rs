@@ -124,28 +124,40 @@ impl PackageImpl {
     }
 }
 
-pub struct Target {
+pub trait Target {
+    fn path(&self) -> &Path;
+    // Retusn to links in target directory that point to files/directories in the package.
+    fn get_installed_package_contents<PackageT: Package>(&self, package: &PackageT) -> Result<Vec<PathBuf>, Error>;
+
+    fn relative_path_to_package<P: Package>(&self, package: &P) -> Result<PathBuf, Error> {
+        relative_path(TargetPath(package.path()), BasePath(self.path()))
+    }
+}
+
+pub struct TargetImpl {
     path: PathBuf,
 }
 
-impl Target {
-    // pub fn new(path: &Path) -> Result<Self, Error> {
-    //     if !path.is_absolute() {
-    //         return Err(Error::PathNotAbsolute);
-    //     }
-    //     Ok(Self {
-    //         path: path.into(),
-    //     })
-    // }
+impl Target for TargetImpl {
+    fn path(&self) -> &Path {
+        &self.path
+    }
 
-    // pub fn get_installed_package_contents<P: Package>(&self, package: &P) -> Result<Vec<PathBuf>, Error> {
-    //     // return paths to items that are installed in the target directory.
-    //     todo!("Implement logic to get installed package contents");
-    // }
+    fn get_installed_package_contents<PackageT: Package>(&self, package: &PackageT) -> Result<Vec<PathBuf>, Error> {
+        todo!()
+    }
+}
 
-    // pub fn path(&self) -> &Path {
-    //     &self.path
-    // }
+impl TargetImpl {
+    pub fn new(path: &Path) -> Result<Self, Error> {
+        if !path.is_absolute() {
+            Err(Error::PathNotAbsolute)
+        }
+        else {
+            let path = path.canonicalize()?;
+            Ok(Self { path })
+        }
+    }
 }
 
 #[cfg(test)]
