@@ -124,10 +124,15 @@ impl PackageImpl {
     }
 }
 
+pub enum InstalledItem {
+    Item(Symlink),
+    NotOwned(PathBuf), // This is either a directory, or a symlink pointing to outside the package.
+}
+
 pub trait Target {
     fn path(&self) -> &Path;
     // Retusn to links in target directory that point to files/directories in the package.
-    fn get_installed_package_contents<PackageT: Package>(&self, package: &PackageT) -> Result<Vec<PathBuf>, Error>;
+    fn get_installed_package_contents<PackageT: Package>(&self, package: &PackageT) -> Result<Vec<InstalledItem>, Error>;
 
     fn relative_path_to_package<P: Package>(&self, package: &P) -> Result<PathBuf, Error> {
         relative_path(TargetPath(package.path()), BasePath(self.path()))
@@ -143,8 +148,9 @@ impl Target for TargetImpl {
         &self.path
     }
 
-    fn get_installed_package_contents<PackageT: Package>(&self, package: &PackageT) -> Result<Vec<PathBuf>, Error> {
-        todo!()
+    fn get_installed_package_contents<PackageT: Package>(&self, package: &PackageT) -> Result<Vec<InstalledItem>, Error> {
+        let _ = package;
+        todo!("Implement get_installed_package_contents for TargetImpl");
     }
 }
 
