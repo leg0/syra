@@ -1,5 +1,5 @@
-use std::io;
-use std::path::{Path, PathBuf};
+use std::{io, path};
+use std::path::{Component, Path, PathBuf};
 
 use crate::error::Error;
 
@@ -47,6 +47,22 @@ pub fn relative_path(target: TargetPath, base: BasePath) -> Result<PathBuf, Erro
     }
 
     Ok(result)
+}
+
+/// normalize - like canonicalize, but does not fail if the path does not exist
+pub fn normalize_path<P: AsRef<Path>>(path: P) -> PathBuf {
+    let path = path.as_ref();
+    let mut normalized = PathBuf::new();
+    for component in path.components() {
+        match component {
+            Component::RootDir => normalized.push("/"),
+            Component::Normal(part) => if !part.is_empty() { normalized.push(part) },
+            Component::ParentDir => { normalized.pop(); },
+            Component::CurDir => { },
+            _ => {}
+        }
+    }
+    normalized
 }
 
 /// Creates a symbolic link from `src` to `dst`.
@@ -239,5 +255,42 @@ mod tests {
             Err(Error::PathNotAbsolute) => (),
             _ => assert!(false, "Expected PathNotAbsolute error"),
         }
+    }
+
+    #[test]
+    fn test_normalize_path1() {
+        let path = Path::new("/");
+        let normalized = normalize_path(path);
+        assert_eq!(normalized, PathBuf::from("/"));
+    }
+    #[test]
+    fn test_normalize_path2() {
+        let path = Path::new("/abc");
+        let normalized = normalize_path(path);
+        assert_eq!(normalized, PathBuf::from("/abc"));
+    }
+    #[test]
+    fn test_normalize_path3() {
+        let path = Path::new("/abc/..");
+        let normalized = normalize_path(path);
+        assert_eq!(normalized, PathBuf::from("/"));
+    }
+    #[test]
+    fn test_normalize_path4() {
+        let path = Path::new("/abc/.");
+        let normalized = normalize_path(path);
+        assert_eq!(normalized, PathBuf::from("/abc"));
+    }
+    #[test]
+    fn test_normalize_path5() {
+        let path = Path::new("/abc///def");
+        let normalized = normalize_path(path);
+        assert_eq!(normalized, PathBuf::from("/abc/def"));
+    }
+    #[test]
+    fn test_normalize_path6() {
+        let path = Path::new("/abc/def/../../../../qwe");
+        let normalized = normalize_path(path);
+        assert_eq!(normalized, PathBuf::from("/qwe"));
     }
 }
