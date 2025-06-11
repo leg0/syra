@@ -44,7 +44,7 @@ pub struct StowArgs {
         help(
             "do not perform any operations that modify the filesystem. Just show what would happen"
         ),
-        default_value_t = true
+        default_value_t = false
     )]
     pub simulate: bool,
 }
