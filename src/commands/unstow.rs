@@ -6,7 +6,7 @@ use crate::cli::UnstowArgs;
 use crate::error::Error;
 use crate::fs::{relative_path, BasePath, Package, PackageImpl, TargetPath};
 
-pub fn run(args: UnstowArgs) -> Result<(), Error> {
+pub fn run(args: &UnstowArgs) -> Result<(), Error> {
     if args.packages.is_empty() {
         eprintln!("error: At least one package is required");
         return Err(Error::MissingPackages);
@@ -14,13 +14,13 @@ pub fn run(args: UnstowArgs) -> Result<(), Error> {
 
     let cwd = current_dir()?;
     let package_dir = args
-        .package_dir
-        .unwrap_or_else(|| cwd.clone())
+        .package_dir.as_ref()
+        .unwrap_or(&cwd)
         .canonicalize()?;
 
     let target_dir = args
-        .target_dir
-        .unwrap_or(cwd)
+        .target_dir.as_ref()
+        .unwrap_or(&cwd)
         .parent()
         .map_or_else(|| Err(Error::DefaultTargetNotAvailable), Ok)?
         .canonicalize()?;

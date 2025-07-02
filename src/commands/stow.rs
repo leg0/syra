@@ -5,7 +5,7 @@ use crate::cli;
 use crate::error::Error;
 use crate::fs::{relative_path, symlink, BasePath, Package, PackageImpl, Symlink, Target, TargetImpl, TargetPath};
 
-pub fn run(args: cli::StowArgs) -> Result<(), Error> {
+pub fn run(args: &cli::StowArgs) -> Result<(), Error> {
     if args.packages.is_empty() {
         eprintln!("error: At least one package is required");
         return Err(Error::MissingPackages);
@@ -19,13 +19,13 @@ pub fn run(args: cli::StowArgs) -> Result<(), Error> {
 
     let cwd = current_dir()?;
     let package_dir = args
-        .package_dir
-        .unwrap_or_else(|| cwd.clone())
+        .package_dir.as_ref()
+        .unwrap_or(&cwd)
         .canonicalize()?;
 
     let target_dir = args
-        .target_dir
-        .unwrap_or(cwd)
+        .target_dir.as_ref()
+        .unwrap_or(&cwd)
         .parent()
         .map_or_else(|| Err(Error::DefaultTargetNotAvailable), Ok)?
         .canonicalize()?;
@@ -136,5 +136,66 @@ fn do_stow<P: Package, T: Target>(
 
 #[cfg(test)]
 mod tests {
-    // use super::*;
+    use super::*;
+    use std::path::{Path, PathBuf};
+
+    use crate::fs::{Package, Target};
+
+    struct TestPackage {
+        path: PathBuf,
+    }
+    impl TestPackage {
+        fn new() -> Self {
+            Self {
+                path: "/test_package".into(),
+            }
+        }
+    }
+    impl Package for TestPackage {
+        fn path(&self) -> &Path {
+            &self.path
+        }
+
+        fn get_package_contents(&self) -> Result<Vec<PathBuf>, Error> {
+            Ok(vec!["file1.txt".into(), "file2.txt".into()])
+        }
+    }
+
+    struct TestTarget {
+        path: PathBuf,
+    }
+    impl TestTarget {
+        fn new() -> Self {
+            Self {
+                path: "/test_target".into(),
+            }
+        }
+    }
+    impl Target for TestTarget {
+        fn path(&self) -> &Path {
+            &self.path
+        }
+
+        fn get_installed_package_contents<PackageT: Package>(&self, package: &PackageT) -> Result<Vec<crate::fs::InstalledItem>, Error> {
+            let _ = package;
+            todo!()
+        }
+    }
+
+
+    // #[test]
+    // fn test_do_stow() {
+    //     use crate::fs::normalize_path;
+    //     let package = TestPackage::new();
+    //     let target = TestTarget::new();
+    //     let pkg_name = "test_package";
+    //     let verbose = true;
+    //
+    //     let actions = do_stow(&package, &target, pkg_name, verbose).expect("do_stow should succeed");
+    //     assert_eq!(actions.len(), 2);
+    //     assert_eq!(actions[0].path, normalize_path(PathBuf::from("/test_package/../test_target/file1.txt")));
+    //     // assert_eq!(actions[0].target, package.path().join("file1.txt"));
+    //     // assert_eq!(actions[1].path, target.path().join("file2.txt"));
+    //     // assert_eq!(actions[1].target, package.path().join("file2.txt"));
+    // }
 }

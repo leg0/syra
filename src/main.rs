@@ -14,7 +14,7 @@ fn main() {
     match cli.command {
         Commands::Stow(args) => {
             println!("stow::run");
-            match stow::run(args) {
+            match stow::run(&args) {
                 Ok(_) => println!("Stow operation completed successfully."),
 
                 // TODO: handle error properly
@@ -23,13 +23,20 @@ fn main() {
         },
         Commands::Unstow(args) => {
             println!("unstow::run");
-            match unstow::run(args) {
+            match unstow::run(&args) {
                 Ok(_) => println!("Unstow operation completed successfully."),
                 Err(e) => eprintln!("Error during unstow operation: {:?}", e),
             }
         }
-        Commands::Restow(_) => {
-            todo!("Restow operation not implemented yet");
+        Commands::Restow(args) => {
+            let r = || -> Result<_, _> {
+                unstow::run(&args)?;
+                stow::run(&args)
+            }();
+            match r {
+                Ok(_) => println!("Restow operation completed successfully."),
+                Err(e) => eprintln!("Error during restow operation: {:?}", e),
+            }
         }
     }
 }
