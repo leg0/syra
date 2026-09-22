@@ -1,42 +1,56 @@
 mod cli;
-mod fs;
-mod error;
 mod commands;
+mod error;
+mod fs;
 
-use cli::{Cli, Commands};
+use std::process::ExitCode;
+
 use clap::Parser;
+use cli::{Cli, Commands};
 
 use commands::{stow, unstow};
+use error::Error;
 
-fn main() {
+fn main() -> ExitCode {
     let cli = Cli::parse();
 
     match cli.command {
         Commands::Stow(args) => {
             println!("stow::run");
-            match stow::run(&args) {
-                Ok(_) => println!("Stow operation completed successfully."),
-
-                // TODO: handle error properly
-                Err(e) => eprintln!("Error during stow operation: {:?}", e),
-            }
-        },
+            report(
+                stow::run(&args),
+                "Stow operation completed successfully.",
+                "Error during stow operation",
+            )
+        }
         Commands::Unstow(args) => {
             println!("unstow::run");
-            match unstow::run(&args) {
-                Ok(_) => println!("Unstow operation completed successfully."),
-                Err(e) => eprintln!("Error during unstow operation: {:?}", e),
-            }
+            report(
+                unstow::run(&args),
+                "Unstow operation completed successfully.",
+                "Error during unstow operation",
+            )
         }
         Commands::Restow(args) => {
-            let r = || -> Result<_, _> {
-                unstow::run(&args)?;
-                stow::run(&args)
-            }();
-            match r {
-                Ok(_) => println!("Restow operation completed successfully."),
-                Err(e) => eprintln!("Error during restow operation: {:?}", e),
-            }
+            let result = unstow::run(&args).and_then(|_| stow::run(&args));
+            report(
+                result,
+                "Restow operation completed successfully.",
+                "Error during restow operation",
+            )
+        }
+    }
+}
+
+fn report(result: Result<(), Error>, success: &str, failure: &str) -> ExitCode {
+    match result {
+        Ok(()) => {
+            println!("{success}");
+            ExitCode::SUCCESS
+        }
+        Err(error) => {
+            eprintln!("{failure}: {error:?}");
+            ExitCode::FAILURE
         }
     }
 }
