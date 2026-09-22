@@ -2,13 +2,14 @@ mod cli;
 mod commands;
 mod error;
 mod fs;
+mod plan;
 
 use std::process::ExitCode;
 
 use clap::Parser;
 use cli::{Cli, Commands};
 
-use commands::{stow, unstow};
+use commands::{restow, stow, unstow};
 use error::Error;
 
 fn main() -> ExitCode {
@@ -32,9 +33,8 @@ fn main() -> ExitCode {
             )
         }
         Commands::Restow(args) => {
-            let result = unstow::run(&args).and_then(|_| stow::run(&args));
             report(
-                result,
+                restow::run(&args),
                 "Restow operation completed successfully.",
                 "Error during restow operation",
             )

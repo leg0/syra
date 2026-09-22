@@ -1,4 +1,4 @@
-use std::fs::{create_dir, read_link, remove_dir, remove_file};
+use std::fs::read_link;
 use std::io;
 use std::path::{Path, PathBuf};
 
@@ -6,18 +6,6 @@ use crate::error::Error;
 
 #[cfg(test)]
 use std::path::Component;
-
-pub struct Symlink {
-    pub path: PathBuf,
-    pub target: PathBuf,
-}
-
-pub enum Action {
-    RemoveSymlink(PathBuf),
-    CreateDirectory(PathBuf),
-    CreateSymlink(Symlink),
-    RemoveDirectory(PathBuf),
-}
 
 pub struct BasePath<'a>(pub &'a Path);
 pub struct TargetPath<'a>(pub &'a Path);
@@ -141,59 +129,6 @@ pub fn is_owned_by_stow_directory(path: &Path, stow_dir: &Path) -> bool {
     stow_dir.join(package_name.as_os_str()).is_dir()
 }
 
-pub fn execute_actions(actions: &[Action], simulate: bool, verbose: bool) -> Result<(), Error> {
-    for action in actions {
-        match action {
-            Action::RemoveSymlink(path) => {
-                if simulate {
-                    println!("remove symlink({:?})", path);
-                } else {
-                    if verbose {
-                        println!("Removing symlink: {:?}", path);
-                    }
-                    if path.is_dir() {
-                        remove_dir(path)?;
-                    } else {
-                        remove_file(path)?;
-                    }
-                }
-            }
-            Action::CreateDirectory(path) => {
-                if simulate {
-                    println!("mkdir({:?})", path);
-                } else {
-                    if verbose {
-                        println!("Creating directory: {:?}", path);
-                    }
-                    create_dir(path)?;
-                }
-            }
-            Action::CreateSymlink(Symlink { path, target }) => {
-                if simulate {
-                    println!("symlink({:?}, {:?})", path, target);
-                } else {
-                    if verbose {
-                        println!("Creating symlink: {:?} -> {:?}", path, target);
-                    }
-                    symlink(target, path)?;
-                }
-            }
-            Action::RemoveDirectory(path) => {
-                if simulate {
-                    println!("rmdir({:?})", path);
-                } else {
-                    if verbose {
-                        println!("Removing directory: {:?}", path);
-                    }
-                    remove_dir(path)?;
-                }
-            }
-        }
-    }
-
-    Ok(())
-}
-
 pub trait Package {
     fn get_package_contents(&self) -> Result<Vec<PathBuf>, Error>;
     fn path(&self) -> &Path;
@@ -244,31 +179,6 @@ impl PackageImpl {
         Ok(Self {
             path: package_path.canonicalize()?,
         })
-    }
-}
-
-pub trait Target {
-    fn path(&self) -> &Path;
-}
-
-pub struct TargetImpl {
-    path: PathBuf,
-}
-
-impl Target for TargetImpl {
-    fn path(&self) -> &Path {
-        &self.path
-    }
-}
-
-impl TargetImpl {
-    pub fn new(path: &Path) -> Result<Self, Error> {
-        if !path.is_absolute() {
-            Err(Error::PathNotAbsolute)
-        } else {
-            let path = path.canonicalize()?;
-            Ok(Self { path })
-        }
     }
 }
 

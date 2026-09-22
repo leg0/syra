@@ -1,18 +1,20 @@
 use std::collections::{BTreeMap, BTreeSet};
-use std::env::current_dir;
+use std::ffi::OsString;
 use std::fs::{read_dir, symlink_metadata};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
-use crate::cli;
+use crate::cli::StowArgs;
 use crate::error::Error;
-use crate::fs::{
-    Action, BasePath, Package, PackageImpl, Symlink, Target, TargetImpl, TargetPath,
-    execute_actions, is_owned_by_stow_directory, relative_path, resolve_link,
-};
+use crate::fs::{Package, PackageImpl};
+use crate::plan::{Entry, Plan};
 
-pub fn run(args: &cli::StowArgs) -> Result<(), Error> {
+pub fn run(args: &StowArgs) -> Result<(), Error> {
+    let plan = plan(Plan::from_args(args)?, args)?;
+    plan.execute(args.simulate, args.verbose)
+}
+
+pub fn plan(mut plan: Plan, args: &StowArgs) -> Result<Plan, Error> {
     if args.packages.is_empty() {
-        eprintln!("error: At least one package is required");
         return Err(Error::MissingPackages);
     }
     if args.verbose {
@@ -22,160 +24,100 @@ pub fn run(args: &cli::StowArgs) -> Result<(), Error> {
         );
     }
 
-    let cwd = current_dir()?;
-    let package_dir = args.package_dir.as_ref().unwrap_or(&cwd).canonicalize()?;
-
-    let target_dir = match &args.target_dir {
-        Some(target_dir) => target_dir.canonicalize()?,
-        None => package_dir
-            .parent()
-            .ok_or(Error::DefaultTargetNotAvailable)?
-            .canonicalize()?,
-    };
-
-    let target = TargetImpl::new(&target_dir)?;
-    for pkg in args.packages.iter() {
+    let stow_dir = plan.stow_dir().to_path_buf();
+    let target_dir = plan.target_dir().to_path_buf();
+    for pkg in &args.packages {
         if args.verbose {
-            println!("Stowing package: {}", pkg);
+            println!("Planning stow for package: {pkg}");
         }
 
-        let package = PackageImpl::new(&package_dir, pkg)?;
-        if args.verbose {
-            println!("Package path: {:?}", package.path());
-        }
-        let actions = do_stow(&package, &target, &package_dir, pkg, args.verbose)?;
-        execute_actions(&actions, args.simulate, args.verbose)?;
-
-        if args.verbose {
-            println!("Stowed package: {}", pkg);
+        let package = PackageImpl::new(&stow_dir, pkg)?;
+        for item in package.get_package_contents()? {
+            plan = plan_item(
+                plan,
+                &package.path().join(&item),
+                &target_dir.join(&item),
+                pkg,
+                args.verbose,
+            )?;
         }
     }
 
-    Ok(())
-}
-
-fn do_stow<P: Package, T: Target>(
-    package: &P,
-    target: &T,
-    stow_dir: &Path,
-    pkg: &str,
-    verbose: bool,
-) -> Result<Vec<Action>, Error> {
-    let package_path = package.path();
-    let target_dir = target.path();
-    let mut actions = Vec::new();
-
-    for item in package.get_package_contents()? {
-        plan_item(
-            &package_path.join(&item),
-            &target_dir.join(&item),
-            stow_dir,
-            pkg,
-            verbose,
-            &mut actions,
-        )?;
-    }
-
-    Ok(actions)
+    Ok(plan)
 }
 
 fn plan_item(
+    mut plan: Plan,
     package_path: &Path,
     link_path: &Path,
-    stow_dir: &Path,
     pkg: &str,
     verbose: bool,
-    actions: &mut Vec<Action>,
-) -> Result<(), Error> {
-    let link_parent = link_path.parent().ok_or(Error::DefaultTargetNotAvailable)?;
-    let link_target = relative_path(TargetPath(package_path), BasePath(link_parent))?;
-
+) -> Result<Plan, Error> {
     if verbose {
         println!(
-            "stow::run: Stowing item: {}, link_path={}",
-            package_path.display(),
-            link_path.display()
+            "Planning stow item: {} -> {}",
+            link_path.display(),
+            package_path.display()
         );
     }
 
-    if link_path.is_symlink() {
-        let existing_path = resolve_link(link_path)?;
-        let package_path = package_path.canonicalize()?;
-        if existing_path == package_path {
-            if verbose {
-                println!(
-                    "symlink({:?}, {:?}) already exists and points to the same target",
-                    link_path, link_target
+    match plan.entry(link_path)? {
+        Entry::Symlink(existing_path) => {
+            let package_path = package_path.canonicalize()?;
+            if existing_path == package_path {
+                return Ok(plan);
+            }
+
+            if package_path.is_dir()
+                && existing_path.is_dir()
+                && plan.is_owned_source(&existing_path)
+            {
+                plan = plan
+                    .remove_symlink(link_path.to_path_buf())
+                    .create_directory(link_path.to_path_buf());
+                return plan_merged_directories(
+                    plan,
+                    &existing_path,
+                    &package_path,
+                    link_path,
+                    pkg,
                 );
             }
-            return Ok(());
+
+            Err(Error::LinkNotOwnedByPackage(
+                link_path.to_path_buf(),
+                pkg.to_string(),
+            ))
         }
+        Entry::Directory => {
+            if !symlink_metadata(package_path)?.file_type().is_dir() {
+                return Err(Error::LinkPathExists(link_path.to_path_buf()));
+            }
 
-        if package_path.is_dir()
-            && existing_path.is_dir()
-            && is_owned_by_stow_directory(&existing_path, stow_dir)
-        {
-            actions.push(Action::RemoveSymlink(link_path.to_path_buf()));
-            actions.push(Action::CreateDirectory(link_path.to_path_buf()));
-            plan_merged_directories(
-                &existing_path,
-                &package_path,
-                link_path,
-                pkg,
-                verbose,
-                actions,
-            )?;
-            return Ok(());
-        }
-
-        return Err(Error::LinkNotOwnedByPackage(
-            link_path.to_path_buf(),
-            pkg.to_string(),
-        ));
-    }
-
-    if link_path.exists() {
-        let package_is_directory = symlink_metadata(package_path)?.file_type().is_dir();
-        if link_path.is_dir() && package_is_directory {
             for entry in read_dir(package_path)? {
                 let entry = entry?;
-                plan_item(
+                plan = plan_item(
+                    plan,
                     &entry.path(),
                     &link_path.join(entry.file_name()),
-                    stow_dir,
                     pkg,
                     verbose,
-                    actions,
                 )?;
             }
-            return Ok(());
+            Ok(plan)
         }
-
-        return Err(Error::LinkPathExists(link_path.to_path_buf()));
+        Entry::File => Err(Error::LinkPathExists(link_path.to_path_buf())),
+        Entry::Missing => plan.create_symlink(link_path.to_path_buf(), package_path),
     }
-
-    if verbose {
-        println!(
-            "stow::run: Scheduling symlink creation: {:?} -> {:?}",
-            link_path, link_target
-        );
-    }
-    actions.push(Action::CreateSymlink(Symlink {
-        path: link_path.to_path_buf(),
-        target: link_target,
-    }));
-
-    Ok(())
 }
 
 fn plan_merged_directories(
+    mut plan: Plan,
     existing: &Path,
     package: &Path,
     link_path: &Path,
     pkg: &str,
-    verbose: bool,
-    actions: &mut Vec<Action>,
-) -> Result<(), Error> {
+) -> Result<Plan, Error> {
     let existing_entries = directory_entries(existing)?;
     let package_entries = directory_entries(package)?;
     let names: BTreeSet<_> = existing_entries
@@ -189,42 +131,28 @@ fn plan_merged_directories(
         let package_item = package_entries.get(&name);
         let target_item = link_path.join(&name);
 
-        match (existing_item, package_item) {
-            (Some(existing_item), None) => {
-                schedule_symlink(existing_item, &target_item, verbose, actions)?;
-            }
-            (None, Some(package_item)) => {
-                schedule_symlink(package_item, &target_item, verbose, actions)?;
-            }
+        plan = match (existing_item, package_item) {
+            (Some(existing_item), None) => plan.create_symlink(target_item, existing_item)?,
+            (None, Some(package_item)) => plan.create_symlink(target_item, package_item)?,
             (Some(existing_item), Some(package_item)) => {
                 let existing_is_dir = symlink_metadata(existing_item)?.file_type().is_dir();
                 let package_is_dir = symlink_metadata(package_item)?.file_type().is_dir();
                 if existing_is_dir && package_is_dir {
-                    actions.push(Action::CreateDirectory(target_item.clone()));
-                    plan_merged_directories(
-                        existing_item,
-                        package_item,
-                        &target_item,
-                        pkg,
-                        verbose,
-                        actions,
-                    )?;
+                    let plan = plan.create_directory(target_item.clone());
+                    plan_merged_directories(plan, existing_item, package_item, &target_item, pkg)?
                 } else if existing_item.canonicalize()? == package_item.canonicalize()? {
-                    schedule_symlink(package_item, &target_item, verbose, actions)?;
+                    plan.create_symlink(target_item, package_item)?
                 } else {
                     return Err(Error::LinkNotOwnedByPackage(target_item, pkg.to_string()));
                 }
             }
             (None, None) => unreachable!(),
-        }
+        };
     }
-
-    Ok(())
+    Ok(plan)
 }
 
-fn directory_entries(
-    path: &Path,
-) -> Result<BTreeMap<std::ffi::OsString, std::path::PathBuf>, Error> {
+fn directory_entries(path: &Path) -> Result<BTreeMap<OsString, PathBuf>, Error> {
     read_dir(path)?
         .map(|entry| {
             let entry = entry?;
@@ -233,59 +161,11 @@ fn directory_entries(
         .collect()
 }
 
-fn schedule_symlink(
-    package_path: &Path,
-    link_path: &Path,
-    verbose: bool,
-    actions: &mut Vec<Action>,
-) -> Result<(), Error> {
-    let link_parent = link_path.parent().ok_or(Error::DefaultTargetNotAvailable)?;
-    let link_target = relative_path(TargetPath(package_path), BasePath(link_parent))?;
-    if verbose {
-        println!(
-            "stow::run: Scheduling symlink creation: {:?} -> {:?}",
-            link_path, link_target
-        );
-    }
-    actions.push(Action::CreateSymlink(Symlink {
-        path: link_path.to_path_buf(),
-        target: link_target,
-    }));
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::fs::{File, create_dir_all};
-    use std::path::{Path, PathBuf};
+    use std::fs::{File, create_dir_all, remove_dir_all};
     use std::time::{SystemTime, UNIX_EPOCH};
-
-    use crate::fs::{Package, Target, symlink};
-
-    struct TestPackage {
-        path: PathBuf,
-    }
-    impl Package for TestPackage {
-        fn path(&self) -> &Path {
-            &self.path
-        }
-
-        fn get_package_contents(&self) -> Result<Vec<PathBuf>, Error> {
-            Ok(read_dir(&self.path)?
-                .map(|entry| entry.map(|entry| PathBuf::from(entry.file_name())))
-                .collect::<Result<_, _>>()?)
-        }
-    }
-
-    struct TestTarget {
-        path: PathBuf,
-    }
-    impl Target for TestTarget {
-        fn path(&self) -> &Path {
-            &self.path
-        }
-    }
 
     struct TestTree {
         root: PathBuf,
@@ -298,95 +178,102 @@ mod tests {
                 .unwrap()
                 .as_nanos();
             let root = std::env::temp_dir().join(format!("syra-stow-{unique}"));
-            create_dir_all(&root).unwrap();
+            create_dir_all(root.join("stow")).unwrap();
             Self { root }
+        }
+
+        fn args(&self, package: &str) -> StowArgs {
+            StowArgs {
+                package_dir: Some(self.root.join("stow")),
+                target_dir: Some(self.root.clone()),
+                packages: vec![package.to_string()],
+                verbose: false,
+                simulate: false,
+            }
         }
     }
 
     impl Drop for TestTree {
         fn drop(&mut self) {
-            std::fs::remove_dir_all(&self.root).unwrap();
+            remove_dir_all(&self.root).unwrap();
         }
     }
 
     #[test]
     fn folds_package_directory_into_existing_target_directory() {
         let tree = TestTree::new();
-        let package_path = tree.root.join("nvim-win64-0.12.5");
-        let target_path = tree.root.join("target");
-        create_dir_all(package_path.join("bin")).unwrap();
-        create_dir_all(target_path.join("bin")).unwrap();
-        File::create(package_path.join("bin").join("nvim.exe")).unwrap();
+        create_dir_all(tree.root.join("stow").join("package").join("bin")).unwrap();
+        create_dir_all(tree.root.join("bin")).unwrap();
+        File::create(
+            tree.root
+                .join("stow")
+                .join("package")
+                .join("bin")
+                .join("tool.exe"),
+        )
+        .unwrap();
 
-        let package = TestPackage {
-            path: package_path.clone(),
-        };
-        let target = TestTarget {
-            path: target_path.clone(),
-        };
-        let actions = do_stow(&package, &target, &tree.root, ".", false).unwrap();
+        run(&tree.args("package")).unwrap();
 
-        assert_eq!(actions.len(), 1);
-        let Action::CreateSymlink(action) = &actions[0] else {
-            panic!("expected a symlink action");
-        };
-        assert_eq!(action.path, target_path.join("bin").join("nvim.exe"));
-        assert_eq!(
-            action.target,
-            relative_path(
-                TargetPath(&package_path.join("bin").join("nvim.exe")),
-                BasePath(&target_path.join("bin"))
-            )
-            .unwrap()
-        );
+        assert!(tree.root.join("bin").join("tool.exe").is_symlink());
     }
 
     #[test]
-    fn does_not_recreate_an_existing_owned_link() {
+    fn repeated_stow_is_a_no_op() {
         let tree = TestTree::new();
-        let package_path = tree.root.join("package");
-        let target_path = tree.root.join("target");
-        create_dir_all(&package_path).unwrap();
-        create_dir_all(&target_path).unwrap();
-        File::create(package_path.join("file.txt")).unwrap();
-        let link_target = relative_path(
-            TargetPath(&package_path.join("file.txt")),
-            BasePath(&target_path),
-        )
-        .unwrap();
-        symlink(&link_target, target_path.join("file.txt")).unwrap();
+        create_dir_all(tree.root.join("stow").join("package")).unwrap();
+        File::create(tree.root.join("stow").join("package").join("file.txt")).unwrap();
 
-        let package = TestPackage { path: package_path };
-        let target = TestTarget { path: target_path };
-        let actions = do_stow(&package, &target, &tree.root, "package", false).unwrap();
+        run(&tree.args("package")).unwrap();
+        run(&tree.args("package")).unwrap();
 
-        assert!(actions.is_empty());
+        assert!(tree.root.join("file.txt").is_symlink());
     }
 
     #[test]
     fn unfolds_a_directory_link_owned_by_another_package() {
         let tree = TestTree::new();
-        let old_package = tree.root.join("old-package");
-        let new_package = tree.root.join("new-package");
-        let target_path = tree.root.join("target");
-        create_dir_all(old_package.join("bin")).unwrap();
-        create_dir_all(new_package.join("bin")).unwrap();
-        create_dir_all(&target_path).unwrap();
-        File::create(old_package.join("bin").join("old.exe")).unwrap();
-        File::create(new_package.join("bin").join("new.exe")).unwrap();
-        let old_target =
-            relative_path(TargetPath(&old_package.join("bin")), BasePath(&target_path)).unwrap();
-        symlink(&old_target, target_path.join("bin")).unwrap();
+        create_dir_all(tree.root.join("stow").join("old-package").join("bin")).unwrap();
+        create_dir_all(tree.root.join("stow").join("new-package").join("bin")).unwrap();
+        File::create(
+            tree.root
+                .join("stow")
+                .join("old-package")
+                .join("bin")
+                .join("old.exe"),
+        )
+        .unwrap();
+        File::create(
+            tree.root
+                .join("stow")
+                .join("new-package")
+                .join("bin")
+                .join("new.exe"),
+        )
+        .unwrap();
 
-        let package = TestPackage { path: new_package };
-        let target = TestTarget {
-            path: target_path.clone(),
-        };
-        let actions = do_stow(&package, &target, &tree.root, "new-package", false).unwrap();
-        execute_actions(&actions, false, false).unwrap();
+        run(&tree.args("old-package")).unwrap();
+        run(&tree.args("new-package")).unwrap();
 
-        assert!(target_path.join("bin").is_dir());
-        assert!(target_path.join("bin").join("old.exe").is_symlink());
-        assert!(target_path.join("bin").join("new.exe").is_symlink());
+        assert!(tree.root.join("bin").is_dir());
+        assert!(!tree.root.join("bin").is_symlink());
+        assert!(tree.root.join("bin").join("old.exe").is_symlink());
+        assert!(tree.root.join("bin").join("new.exe").is_symlink());
+    }
+
+    #[test]
+    fn conflict_in_later_package_does_not_install_earlier_package() {
+        let tree = TestTree::new();
+        create_dir_all(tree.root.join("stow").join("first")).unwrap();
+        create_dir_all(tree.root.join("stow").join("second")).unwrap();
+        File::create(tree.root.join("stow").join("first").join("first.txt")).unwrap();
+        File::create(tree.root.join("stow").join("second").join("conflict.txt")).unwrap();
+        File::create(tree.root.join("conflict.txt")).unwrap();
+        let mut args = tree.args("first");
+        args.packages.push("second".to_string());
+
+        assert!(run(&args).is_err());
+        assert!(!tree.root.join("first.txt").exists());
+        assert!(!tree.root.join("first.txt").is_symlink());
     }
 }
