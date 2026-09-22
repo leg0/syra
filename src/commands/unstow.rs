@@ -1,10 +1,10 @@
 use std::collections::{BTreeMap, BTreeSet};
-use std::fs::read_dir;
 use std::path::{Path, PathBuf};
 
 use crate::cli::UnstowArgs;
 use crate::error::Error;
-use crate::fs::{Package, PackageImpl};
+use crate::fs::PackageImpl;
+use crate::ignore::{IgnoreContext, PackageIgnore};
 use crate::plan::{Entry, Plan};
 
 pub fn run(args: &UnstowArgs) -> Result<(), Error> {
@@ -19,27 +19,30 @@ pub fn plan(mut plan: Plan, args: &UnstowArgs) -> Result<Plan, Error> {
 
     let stow_dir = plan.stow_dir().to_path_buf();
     let target_dir = plan.target_dir().to_path_buf();
+    let ignore_context = IgnoreContext::system()?;
     for pkg in &args.packages {
         if args.verbose {
             println!("Planning unstow for package: {pkg}");
         }
 
         let package = PackageImpl::new(&stow_dir, pkg)?;
+        let package_ignore = ignore_context.for_package(package.path())?;
         let mut affected_roots = BTreeSet::new();
-        for item in package.get_package_contents()? {
-            plan = plan_unstow_item(
+        for (item, package_path) in package_ignore.read_directory(package.path())? {
+            (plan, _) = plan_unstow_item(
                 plan,
-                &package.path().join(&item),
+                &package_path,
                 &target_dir.join(&item),
                 &target_dir,
                 &mut affected_roots,
                 args.verbose,
+                &package_ignore,
             )?;
         }
 
         for root in affected_roots {
             if !matches!(plan.entry(&root)?, Entry::Missing) {
-                (plan, _) = plan_refold(plan, &root, args.verbose)?;
+                (plan, _) = plan_refold(plan, &root, args.verbose, &ignore_context)?;
             }
         }
     }
@@ -54,7 +57,8 @@ fn plan_unstow_item(
     target_dir: &Path,
     affected_roots: &mut BTreeSet<PathBuf>,
     verbose: bool,
-) -> Result<Plan, Error> {
+    package_ignore: &PackageIgnore,
+) -> Result<(Plan, bool), Error> {
     match plan.entry(link_path)? {
         Entry::Symlink(source) => {
             if source == package_path.canonicalize()? {
@@ -67,31 +71,40 @@ fn plan_unstow_item(
                 {
                     affected_roots.insert(target_dir.join(root.as_os_str()));
                 }
+                return Ok((plan, true));
             }
         }
         Entry::Directory if package_path.is_dir() => {
-            for entry in read_dir(package_path)? {
-                let entry = entry?;
-                plan = plan_unstow_item(
+            let mut removed_package_content = false;
+            for (name, entry_path) in package_ignore.read_directory(package_path)? {
+                let removed;
+                (plan, removed) = plan_unstow_item(
                     plan,
-                    &entry.path(),
-                    &link_path.join(entry.file_name()),
+                    &entry_path,
+                    &link_path.join(name),
                     target_dir,
                     affected_roots,
                     verbose,
+                    package_ignore,
                 )?;
+                removed_package_content |= removed;
+            }
+            if removed_package_content && plan.read_directory(link_path)?.is_empty() {
+                plan = plan.remove_directory(link_path.to_path_buf());
+                return Ok((plan, true));
             }
         }
         Entry::Missing | Entry::File | Entry::Directory => {}
     }
 
-    Ok(plan)
+    Ok((plan, false))
 }
 
 fn plan_refold(
     mut plan: Plan,
     path: &Path,
     verbose: bool,
+    ignore_context: &IgnoreContext,
 ) -> Result<(Plan, Option<PathBuf>), Error> {
     if !matches!(plan.entry(path)?, Entry::Directory) {
         return Ok((plan, None));
@@ -102,7 +115,7 @@ fn plan_refold(
         let source = match plan.entry(&child)? {
             Entry::Symlink(source) => source,
             Entry::Directory => {
-                let (next_plan, source) = plan_refold(plan, &child, verbose)?;
+                let (next_plan, source) = plan_refold(plan, &child, verbose, ignore_context)?;
                 plan = next_plan;
                 let Some(source) = source else {
                     return Ok((plan, None));
@@ -138,9 +151,14 @@ fn plan_refold(
         return Ok((plan, None));
     }
 
-    let source_entries = read_dir(&source_dir)?
-        .map(|entry| entry.map(|entry| entry.file_name()))
-        .collect::<Result<BTreeSet<_>, _>>()?;
+    let source_ignore = ignore_context.for_source(plan.stow_dir(), &source_dir)?;
+    if source_ignore.contains_ignored_entries(&source_dir)? {
+        return Ok((plan, None));
+    }
+    let source_entries = source_ignore
+        .read_directory(&source_dir)?
+        .into_keys()
+        .collect::<BTreeSet<_>>();
     let target_entries = entries.keys().cloned().collect::<BTreeSet<_>>();
     if source_entries != target_entries {
         return Ok((plan, None));
@@ -258,5 +276,27 @@ mod tests {
                 .canonicalize()
                 .unwrap()
         );
+    }
+
+    #[test]
+    fn does_not_refold_a_source_directory_with_ignored_entries() {
+        let tree = TestTree::new();
+        let old_package = tree.root.join("stow").join("old-package");
+        let new_package = tree.root.join("stow").join("new-package");
+        create_dir_all(old_package.join("bin")).unwrap();
+        create_dir_all(new_package.join("bin")).unwrap();
+        File::create(old_package.join("bin").join("old.exe")).unwrap();
+        File::create(new_package.join("bin").join("new.exe")).unwrap();
+        File::create(new_package.join("bin").join("new.tmp")).unwrap();
+        std::fs::write(new_package.join(".stow-local-ignore"), ".*\\.tmp\n").unwrap();
+        stow::run(&tree.args("old-package")).unwrap();
+        stow::run(&tree.args("new-package")).unwrap();
+
+        run(&tree.args("old-package")).unwrap();
+
+        assert!(tree.root.join("bin").is_dir());
+        assert!(!tree.root.join("bin").is_symlink());
+        assert!(tree.root.join("bin").join("new.exe").is_symlink());
+        assert!(!tree.root.join("bin").join("new.tmp").exists());
     }
 }

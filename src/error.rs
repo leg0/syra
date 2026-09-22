@@ -1,13 +1,20 @@
 use std::{io, path::PathBuf};
 
-pub enum Error
-{
+pub enum Error {
     Io(io::Error),
     PathNotAbsolute,
     DefaultTargetNotAvailable,
     MissingPackages,
     LinkPathExists(PathBuf),
     LinkNotOwnedByPackage(PathBuf, String),
+    InvalidIgnorePattern {
+        path: PathBuf,
+        line: usize,
+        pattern: String,
+        message: String,
+    },
+    NonUnicodePath(PathBuf),
+    PathOutsidePackage(PathBuf),
 }
 
 impl From<io::Error> for Error {
@@ -21,15 +28,38 @@ impl std::fmt::Debug for Error {
         match self {
             Error::Io(e) => write!(f, "IO error: {}", e),
             Error::PathNotAbsolute => write!(f, "Path is not absolute"),
-            Error::DefaultTargetNotAvailable => write!(f, "Default target directory is not available"),
+            Error::DefaultTargetNotAvailable => {
+                write!(f, "Default target directory is not available")
+            }
             Error::MissingPackages => write!(f, "At least one package is required"),
-            Error::LinkPathExists(path) => write!(f, "Link path already exists: {}", path.display()),
+            Error::LinkPathExists(path) => {
+                write!(f, "Link path already exists: {}", path.display())
+            }
             Error::LinkNotOwnedByPackage(path, pkg) => write!(
                 f,
                 "Link path '{}' is not owned by package '{}'",
                 path.display(),
                 pkg
             ),
+            Error::InvalidIgnorePattern {
+                path,
+                line,
+                pattern,
+                message,
+            } => write!(
+                f,
+                "Invalid ignore pattern in '{}', line {} ('{}'): {}",
+                path.display(),
+                line,
+                pattern,
+                message
+            ),
+            Error::NonUnicodePath(path) => {
+                write!(f, "Path cannot be matched as Unicode: {}", path.display())
+            }
+            Error::PathOutsidePackage(path) => {
+                write!(f, "Path is outside the package: {}", path.display())
+            }
         }
     }
 }

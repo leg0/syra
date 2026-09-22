@@ -69,4 +69,20 @@ mod tests {
         assert!(tree.root.join("bin").is_symlink());
         assert!(tree.root.join("bin").join("tool.exe").exists());
     }
+
+    #[test]
+    fn restow_preserves_ignore_filtering() {
+        let tree = TestTree::new();
+        let package = tree.root.join("stow").join("package");
+        File::create(package.join("bin").join("ignored.tmp")).unwrap();
+        std::fs::write(package.join(".stow-local-ignore"), ".*\\.tmp\n").unwrap();
+        let args = tree.args();
+
+        stow::run(&args).unwrap();
+        run(&args).unwrap();
+
+        assert!(tree.root.join("bin").is_dir());
+        assert!(tree.root.join("bin").join("tool.exe").is_symlink());
+        assert!(!tree.root.join("bin").join("ignored.tmp").exists());
+    }
 }

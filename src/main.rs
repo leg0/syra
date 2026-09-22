@@ -2,6 +2,7 @@ mod cli;
 mod commands;
 mod error;
 mod fs;
+mod ignore;
 mod plan;
 
 use std::process::ExitCode;
@@ -32,13 +33,11 @@ fn main() -> ExitCode {
                 "Error during unstow operation",
             )
         }
-        Commands::Restow(args) => {
-            report(
-                restow::run(&args),
-                "Restow operation completed successfully.",
-                "Error during restow operation",
-            )
-        }
+        Commands::Restow(args) => report(
+            restow::run(&args),
+            "Restow operation completed successfully.",
+            "Error during restow operation",
+        ),
     }
 }
 

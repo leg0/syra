@@ -1,12 +1,20 @@
-use std::collections::{BTreeMap, BTreeSet};
-use std::ffi::OsString;
-use std::fs::{read_dir, symlink_metadata};
-use std::path::{Path, PathBuf};
+use std::collections::BTreeSet;
+use std::fs::symlink_metadata;
+use std::path::Path;
 
 use crate::cli::StowArgs;
 use crate::error::Error;
-use crate::fs::{Package, PackageImpl};
+use crate::fs::PackageImpl;
+use crate::ignore::{IgnoreContext, PackageIgnore};
 use crate::plan::{Entry, Plan};
+
+struct MergeContext<'a> {
+    package_name: &'a str,
+    verbose: bool,
+    ignore_context: &'a IgnoreContext,
+    existing_ignore: &'a PackageIgnore,
+    package_ignore: &'a PackageIgnore,
+}
 
 pub fn run(args: &StowArgs) -> Result<(), Error> {
     let plan = plan(Plan::from_args(args)?, args)?;
@@ -26,19 +34,26 @@ pub fn plan(mut plan: Plan, args: &StowArgs) -> Result<Plan, Error> {
 
     let stow_dir = plan.stow_dir().to_path_buf();
     let target_dir = plan.target_dir().to_path_buf();
+    let ignore_context = IgnoreContext::system()?;
     for pkg in &args.packages {
         if args.verbose {
             println!("Planning stow for package: {pkg}");
         }
 
         let package = PackageImpl::new(&stow_dir, pkg)?;
-        for item in package.get_package_contents()? {
+        let package_ignore = ignore_context.for_package(package.path())?;
+        for (_, package_path) in package_ignore.read_directory(package.path())? {
+            let item = package_path
+                .file_name()
+                .ok_or_else(|| Error::PathOutsidePackage(package_path.clone()))?;
             plan = plan_item(
                 plan,
-                &package.path().join(&item),
-                &target_dir.join(&item),
+                &package_path,
+                &target_dir.join(item),
                 pkg,
                 args.verbose,
+                &ignore_context,
+                &package_ignore,
             )?;
         }
     }
@@ -52,6 +67,8 @@ fn plan_item(
     link_path: &Path,
     pkg: &str,
     verbose: bool,
+    ignore_context: &IgnoreContext,
+    package_ignore: &PackageIgnore,
 ) -> Result<Plan, Error> {
     if verbose {
         println!(
@@ -72,6 +89,7 @@ fn plan_item(
                 && existing_path.is_dir()
                 && plan.is_owned_source(&existing_path)
             {
+                let existing_ignore = ignore_context.for_source(plan.stow_dir(), &existing_path)?;
                 plan = plan
                     .remove_symlink(link_path.to_path_buf())
                     .create_directory(link_path.to_path_buf());
@@ -80,7 +98,13 @@ fn plan_item(
                     &existing_path,
                     &package_path,
                     link_path,
-                    pkg,
+                    &MergeContext {
+                        package_name: pkg,
+                        verbose,
+                        ignore_context,
+                        existing_ignore: &existing_ignore,
+                        package_ignore,
+                    },
                 );
             }
 
@@ -94,20 +118,41 @@ fn plan_item(
                 return Err(Error::LinkPathExists(link_path.to_path_buf()));
             }
 
-            for entry in read_dir(package_path)? {
-                let entry = entry?;
+            for (name, entry_path) in package_ignore.read_directory(package_path)? {
                 plan = plan_item(
                     plan,
-                    &entry.path(),
-                    &link_path.join(entry.file_name()),
+                    &entry_path,
+                    &link_path.join(name),
                     pkg,
                     verbose,
+                    ignore_context,
+                    package_ignore,
                 )?;
             }
             Ok(plan)
         }
         Entry::File => Err(Error::LinkPathExists(link_path.to_path_buf())),
-        Entry::Missing => plan.create_symlink(link_path.to_path_buf(), package_path),
+        Entry::Missing => {
+            if symlink_metadata(package_path)?.file_type().is_dir()
+                && package_ignore.contains_ignored_entries(package_path)?
+            {
+                plan = plan.create_directory(link_path.to_path_buf());
+                for (name, entry_path) in package_ignore.read_directory(package_path)? {
+                    plan = plan_item(
+                        plan,
+                        &entry_path,
+                        &link_path.join(name),
+                        pkg,
+                        verbose,
+                        ignore_context,
+                        package_ignore,
+                    )?;
+                }
+                Ok(plan)
+            } else {
+                plan.create_symlink(link_path.to_path_buf(), package_path)
+            }
+        }
     }
 }
 
@@ -116,10 +161,10 @@ fn plan_merged_directories(
     existing: &Path,
     package: &Path,
     link_path: &Path,
-    pkg: &str,
+    context: &MergeContext,
 ) -> Result<Plan, Error> {
-    let existing_entries = directory_entries(existing)?;
-    let package_entries = directory_entries(package)?;
+    let existing_entries = context.existing_ignore.read_directory(existing)?;
+    let package_entries = context.package_ignore.read_directory(package)?;
     let names: BTreeSet<_> = existing_entries
         .keys()
         .chain(package_entries.keys())
@@ -132,18 +177,43 @@ fn plan_merged_directories(
         let target_item = link_path.join(&name);
 
         plan = match (existing_item, package_item) {
-            (Some(existing_item), None) => plan.create_symlink(target_item, existing_item)?,
-            (None, Some(package_item)) => plan.create_symlink(target_item, package_item)?,
+            (Some(existing_item), None) => plan_item(
+                plan,
+                existing_item,
+                &target_item,
+                context.package_name,
+                context.verbose,
+                context.ignore_context,
+                context.existing_ignore,
+            )?,
+            (None, Some(package_item)) => plan_item(
+                plan,
+                package_item,
+                &target_item,
+                context.package_name,
+                context.verbose,
+                context.ignore_context,
+                context.package_ignore,
+            )?,
             (Some(existing_item), Some(package_item)) => {
                 let existing_is_dir = symlink_metadata(existing_item)?.file_type().is_dir();
                 let package_is_dir = symlink_metadata(package_item)?.file_type().is_dir();
                 if existing_is_dir && package_is_dir {
                     let plan = plan.create_directory(target_item.clone());
-                    plan_merged_directories(plan, existing_item, package_item, &target_item, pkg)?
+                    plan_merged_directories(
+                        plan,
+                        existing_item,
+                        package_item,
+                        &target_item,
+                        context,
+                    )?
                 } else if existing_item.canonicalize()? == package_item.canonicalize()? {
                     plan.create_symlink(target_item, package_item)?
                 } else {
-                    return Err(Error::LinkNotOwnedByPackage(target_item, pkg.to_string()));
+                    return Err(Error::LinkNotOwnedByPackage(
+                        target_item,
+                        context.package_name.to_string(),
+                    ));
                 }
             }
             (None, None) => unreachable!(),
@@ -152,19 +222,11 @@ fn plan_merged_directories(
     Ok(plan)
 }
 
-fn directory_entries(path: &Path) -> Result<BTreeMap<OsString, PathBuf>, Error> {
-    read_dir(path)?
-        .map(|entry| {
-            let entry = entry?;
-            Ok((entry.file_name(), entry.path()))
-        })
-        .collect()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::fs::{File, create_dir_all, remove_dir_all};
+    use std::path::PathBuf;
     use std::time::{SystemTime, UNIX_EPOCH};
 
     struct TestTree {
@@ -259,6 +321,78 @@ mod tests {
         assert!(!tree.root.join("bin").is_symlink());
         assert!(tree.root.join("bin").join("old.exe").is_symlink());
         assert!(tree.root.join("bin").join("new.exe").is_symlink());
+    }
+
+    #[test]
+    fn ignored_entries_are_not_exposed_through_directory_folding() {
+        let tree = TestTree::new();
+        let package = tree.root.join("stow").join("package");
+        create_dir_all(package.join("bin")).unwrap();
+        create_dir_all(package.join("cache")).unwrap();
+        File::create(package.join("bin").join("keep.exe")).unwrap();
+        File::create(package.join("bin").join("ignored.tmp")).unwrap();
+        File::create(package.join("cache").join("secret.txt")).unwrap();
+        std::fs::write(package.join(".stow-local-ignore"), ".*\\.tmp\ncache\n").unwrap();
+
+        run(&tree.args("package")).unwrap();
+
+        assert!(tree.root.join("bin").is_dir());
+        assert!(!tree.root.join("bin").is_symlink());
+        assert!(tree.root.join("bin").join("keep.exe").is_symlink());
+        assert!(!tree.root.join("bin").join("ignored.tmp").exists());
+        assert!(!tree.root.join("cache").exists());
+        assert!(!tree.root.join(".stow-local-ignore").exists());
+    }
+
+    #[test]
+    fn packages_in_one_plan_use_independent_ignore_rules() {
+        let tree = TestTree::new();
+        let first = tree.root.join("stow").join("first");
+        let second = tree.root.join("stow").join("second");
+        create_dir_all(&first).unwrap();
+        create_dir_all(&second).unwrap();
+        File::create(first.join("first.keep")).unwrap();
+        File::create(first.join("first.skip")).unwrap();
+        File::create(second.join("second.keep")).unwrap();
+        File::create(second.join("second.skip")).unwrap();
+        std::fs::write(first.join(".stow-local-ignore"), "first\\.skip\n").unwrap();
+        std::fs::write(second.join(".stow-local-ignore"), "second\\.skip\n").unwrap();
+        let mut args = tree.args("first");
+        args.packages.push("second".to_string());
+
+        run(&args).unwrap();
+
+        assert!(tree.root.join("first.keep").is_symlink());
+        assert!(!tree.root.join("first.skip").exists());
+        assert!(tree.root.join("second.keep").is_symlink());
+        assert!(!tree.root.join("second.skip").exists());
+    }
+
+    #[test]
+    fn unfolding_applies_each_source_packages_current_ignore_rules() {
+        let tree = TestTree::new();
+        let old_package = tree.root.join("stow").join("old-package");
+        let new_package = tree.root.join("stow").join("new-package");
+        create_dir_all(old_package.join("bin")).unwrap();
+        create_dir_all(new_package.join("bin")).unwrap();
+        File::create(old_package.join("bin").join("old.exe")).unwrap();
+
+        run(&tree.args("old-package")).unwrap();
+        assert!(tree.root.join("bin").is_symlink());
+
+        File::create(old_package.join("bin").join("old.tmp")).unwrap();
+        std::fs::write(old_package.join(".stow-local-ignore"), ".*\\.tmp\n").unwrap();
+        File::create(new_package.join("bin").join("new.exe")).unwrap();
+        File::create(new_package.join("bin").join("new.tmp")).unwrap();
+        std::fs::write(new_package.join(".stow-local-ignore"), ".*\\.tmp\n").unwrap();
+
+        run(&tree.args("new-package")).unwrap();
+
+        assert!(tree.root.join("bin").is_dir());
+        assert!(tree.root.join("bin").join("old.exe").is_symlink());
+        assert!(tree.root.join("bin").join("new.exe").is_symlink());
+        assert!(!tree.root.join("bin").join("old.tmp").exists());
+        assert!(!tree.root.join("bin").join("new.tmp").exists());
     }
 
     #[test]

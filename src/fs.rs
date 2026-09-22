@@ -129,36 +129,15 @@ pub fn is_owned_by_stow_directory(path: &Path, stow_dir: &Path) -> bool {
     stow_dir.join(package_name.as_os_str()).is_dir()
 }
 
-pub trait Package {
-    fn get_package_contents(&self) -> Result<Vec<PathBuf>, Error>;
-    fn path(&self) -> &Path;
-}
-
 pub struct PackageImpl {
     path: PathBuf,
 }
 
-impl Package for PackageImpl {
-    fn get_package_contents(&self) -> Result<Vec<PathBuf>, Error> {
-        let package_dir = &self.path;
-        if !package_dir.is_absolute() {
-            return Err(Error::PathNotAbsolute);
-        }
-
-        let mut contents = Vec::new();
-        for entry in package_dir.read_dir()? {
-            contents.push(PathBuf::from(entry?.file_name()));
-        }
-
-        Ok(contents)
-    }
-
-    fn path(&self) -> &Path {
+impl PackageImpl {
+    pub fn path(&self) -> &Path {
         &self.path
     }
-}
 
-impl PackageImpl {
     pub fn new(package_dir: &Path, name: &str) -> Result<Self, Error> {
         if !package_dir.is_absolute() {
             return Err(Error::PathNotAbsolute);
@@ -187,10 +166,14 @@ mod tests {
     use super::*;
     use std::path::Path;
 
+    fn test_root() -> PathBuf {
+        std::env::temp_dir().join("syra-relative-path-tests")
+    }
+
     #[test]
     fn test_common_prefix() {
-        let target = Path::new("/home/user/project/src");
-        let base = Path::new("/home/user/docs");
+        let target = test_root().join("home/user/project/src");
+        let base = test_root().join("home/user/docs");
         assert_eq!(
             relative_path(TargetPath(&target), BasePath(&base)).unwrap(),
             PathBuf::from("../project/src")
@@ -199,8 +182,8 @@ mod tests {
 
     #[test]
     fn test_no_common_prefix() {
-        let target = Path::new("/a/b/c");
-        let base = Path::new("/x/y/z");
+        let target = test_root().join("a/b/c");
+        let base = test_root().join("x/y/z");
         assert_eq!(
             relative_path(TargetPath(&target), BasePath(&base)).unwrap(),
             PathBuf::from("../../../a/b/c")
@@ -209,8 +192,8 @@ mod tests {
 
     #[test]
     fn test_identical_paths() {
-        let target = Path::new("/same/path");
-        let base = Path::new("/same/path");
+        let target = test_root().join("same/path");
+        let base = target.clone();
         assert_eq!(
             relative_path(TargetPath(&target), BasePath(&base)).unwrap(),
             PathBuf::from("")
@@ -219,8 +202,8 @@ mod tests {
 
     #[test]
     fn test_target_inside_base() {
-        let target = Path::new("/a/b/c/d");
-        let base = Path::new("/a/b");
+        let target = test_root().join("a/b/c/d");
+        let base = test_root().join("a/b");
         assert_eq!(
             relative_path(TargetPath(&target), BasePath(&base)).unwrap(),
             PathBuf::from("c/d")
@@ -229,8 +212,8 @@ mod tests {
 
     #[test]
     fn test_base_inside_target() {
-        let target = Path::new("/a/b");
-        let base = Path::new("/a/b/c/d");
+        let target = test_root().join("a/b");
+        let base = test_root().join("a/b/c/d");
         assert_eq!(
             relative_path(TargetPath(&target), BasePath(&base)).unwrap(),
             PathBuf::from("../../")
@@ -240,7 +223,7 @@ mod tests {
     #[test]
     fn test_error_on_relative_target() {
         let target = Path::new("a/b/c");
-        let base = Path::new("/a/b");
+        let base = test_root().join("a/b");
         match relative_path(TargetPath(&target), BasePath(&base)) {
             Err(Error::PathNotAbsolute) => (),
             _ => assert!(false, "Expected PathNotAbsolute error"),
@@ -249,7 +232,7 @@ mod tests {
 
     #[test]
     fn test_error_on_relative_base() {
-        let target = Path::new("/a/b/c");
+        let target = test_root().join("a/b/c");
         let base = Path::new("a/b");
         match relative_path(TargetPath(&target), BasePath(&base)) {
             Err(Error::PathNotAbsolute) => (),

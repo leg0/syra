@@ -69,6 +69,9 @@ impl Plan {
         if let Some(entry) = self.overlay.get(path) {
             return Ok(entry.entry.clone());
         }
+        if self.has_replaced_ancestor(path) {
+            return Ok(Entry::Missing);
+        }
 
         if path.is_symlink() {
             Ok(Entry::Symlink(resolve_link(path)?))
@@ -79,6 +82,14 @@ impl Plan {
         } else {
             Ok(Entry::Missing)
         }
+    }
+
+    fn has_replaced_ancestor(&self, path: &Path) -> bool {
+        path.ancestors().skip(1).any(|ancestor| {
+            self.overlay
+                .get(ancestor)
+                .is_some_and(|entry| !entry.read_real_directory)
+        })
     }
 
     pub fn read_directory(&self, path: &Path) -> Result<BTreeMap<OsString, PathBuf>, Error> {
