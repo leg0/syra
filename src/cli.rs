@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use clap::{Parser, Subcommand};
 
 #[derive(Parser)]
-#[command(trailing_var_arg = true)]
+#[command(version, trailing_var_arg = true)]
 pub struct Cli {
     // #[arg(short = 'S', long = "stow", help("Stow"), default_value_t=true)]
     // pub stow: bool,

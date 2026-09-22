@@ -1,11 +1,22 @@
-use std::{io, path};
-use std::path::{Component, Path, PathBuf};
+use std::fs::{create_dir, read_link, remove_dir, remove_file};
+use std::io;
+use std::path::{Path, PathBuf};
 
 use crate::error::Error;
+
+#[cfg(test)]
+use std::path::Component;
 
 pub struct Symlink {
     pub path: PathBuf,
     pub target: PathBuf,
+}
+
+pub enum Action {
+    RemoveSymlink(PathBuf),
+    CreateDirectory(PathBuf),
+    CreateSymlink(Symlink),
+    RemoveDirectory(PathBuf),
 }
 
 pub struct BasePath<'a>(pub &'a Path);
@@ -50,15 +61,22 @@ pub fn relative_path(target: TargetPath, base: BasePath) -> Result<PathBuf, Erro
 }
 
 /// normalize - like canonicalize, but does not fail if the path does not exist
+#[cfg(test)]
 pub fn normalize_path<P: AsRef<Path>>(path: P) -> PathBuf {
     let path = path.as_ref();
     let mut normalized = PathBuf::new();
     for component in path.components() {
         match component {
             Component::RootDir => normalized.push("/"),
-            Component::Normal(part) => if !part.is_empty() { normalized.push(part) },
-            Component::ParentDir => { normalized.pop(); },
-            Component::CurDir => { },
+            Component::Normal(part) => {
+                if !part.is_empty() {
+                    normalized.push(part)
+                }
+            }
+            Component::ParentDir => {
+                normalized.pop();
+            }
+            Component::CurDir => {}
             _ => {}
         }
     }
@@ -80,12 +98,100 @@ pub fn symlink<P: AsRef<Path>, Q: AsRef<Path>>(src: P, dst: Q) -> Result<(), io:
     #[cfg(windows)]
     {
         use std::os::windows::fs::{symlink_dir, symlink_file};
-        if src.is_dir() {
+        let source_path = if src.is_absolute() {
+            src.to_path_buf()
+        } else {
+            dst.parent()
+                .ok_or_else(|| io::Error::other("symlink destination has no parent"))?
+                .join(src)
+        };
+        if source_path.is_dir() {
             symlink_dir(src, dst)
         } else {
             symlink_file(src, dst)
         }
     }
+}
+
+pub fn resolve_link(path: &Path) -> Result<PathBuf, Error> {
+    let target = read_link(path)?;
+    let resolved = if target.is_absolute() {
+        target
+    } else {
+        path.parent()
+            .ok_or(Error::DefaultTargetNotAvailable)?
+            .join(target)
+    };
+    Ok(resolved.canonicalize()?)
+}
+
+pub fn is_owned_by_stow_directory(path: &Path, stow_dir: &Path) -> bool {
+    let Ok(path) = path.canonicalize() else {
+        return false;
+    };
+    let Ok(stow_dir) = stow_dir.canonicalize() else {
+        return false;
+    };
+    let Ok(relative) = path.strip_prefix(&stow_dir) else {
+        return false;
+    };
+    let Some(package_name) = relative.components().next() else {
+        return false;
+    };
+    stow_dir.join(package_name.as_os_str()).is_dir()
+}
+
+pub fn execute_actions(actions: &[Action], simulate: bool, verbose: bool) -> Result<(), Error> {
+    for action in actions {
+        match action {
+            Action::RemoveSymlink(path) => {
+                if simulate {
+                    println!("remove symlink({:?})", path);
+                } else {
+                    if verbose {
+                        println!("Removing symlink: {:?}", path);
+                    }
+                    if path.is_dir() {
+                        remove_dir(path)?;
+                    } else {
+                        remove_file(path)?;
+                    }
+                }
+            }
+            Action::CreateDirectory(path) => {
+                if simulate {
+                    println!("mkdir({:?})", path);
+                } else {
+                    if verbose {
+                        println!("Creating directory: {:?}", path);
+                    }
+                    create_dir(path)?;
+                }
+            }
+            Action::CreateSymlink(Symlink { path, target }) => {
+                if simulate {
+                    println!("symlink({:?}, {:?})", path, target);
+                } else {
+                    if verbose {
+                        println!("Creating symlink: {:?} -> {:?}", path, target);
+                    }
+                    symlink(target, path)?;
+                }
+            }
+            Action::RemoveDirectory(path) => {
+                if simulate {
+                    println!("rmdir({:?})", path);
+                } else {
+                    if verbose {
+                        println!("Removing directory: {:?}", path);
+                    }
+                    remove_dir(path)?;
+                }
+            }
+        }
+    }
+
+    Ok(())
 }
 
 pub trait Package {
@@ -105,8 +211,7 @@ impl Package for PackageImpl {
         }
 
         let mut contents = Vec::new();
-        let mut iter = package_dir.read_dir()?;
-        while let Some(entry) = iter.next() {
+        for entry in package_dir.read_dir()? {
             contents.push(PathBuf::from(entry?.file_name()));
         }
 
@@ -136,23 +241,14 @@ impl PackageImpl {
             )));
         }
 
-        Ok(Self { path: package_path.canonicalize()? })
+        Ok(Self {
+            path: package_path.canonicalize()?,
+        })
     }
-}
-
-pub enum InstalledItem {
-    Item(Symlink),
-    NotOwned(PathBuf), // This is either a directory, or a symlink pointing to outside the package.
 }
 
 pub trait Target {
     fn path(&self) -> &Path;
-    // Retusn to links in target directory that point to files/directories in the package.
-    fn get_installed_package_contents<PackageT: Package>(&self, package: &PackageT) -> Result<Vec<InstalledItem>, Error>;
-
-    fn relative_path_to_package<P: Package>(&self, package: &P) -> Result<PathBuf, Error> {
-        relative_path(TargetPath(package.path()), BasePath(self.path()))
-    }
 }
 
 pub struct TargetImpl {
@@ -163,19 +259,13 @@ impl Target for TargetImpl {
     fn path(&self) -> &Path {
         &self.path
     }
-
-    fn get_installed_package_contents<PackageT: Package>(&self, package: &PackageT) -> Result<Vec<InstalledItem>, Error> {
-        let _ = package;
-        todo!("Implement get_installed_package_contents for TargetImpl");
-    }
 }
 
 impl TargetImpl {
     pub fn new(path: &Path) -> Result<Self, Error> {
         if !path.is_absolute() {
             Err(Error::PathNotAbsolute)
-        }
-        else {
+        } else {
             let path = path.canonicalize()?;
             Ok(Self { path })
         }
